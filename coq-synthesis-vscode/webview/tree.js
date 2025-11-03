@@ -27,255 +27,290 @@ OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING
 NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE,
 EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.*/
 
-
+/**
+ * Enhanced Tree Visualization Component
+ * Provides a robust, user-friendly tree display with improved error handling
+ * and better user experience features.
+ */
 function renderTree(treeData) {
-    // Remove the old tree, if one exists.
-    d3.select("#tree-container").selectAll("*").remove();
+    // Validate input data
+    if (!treeData || typeof treeData !== 'object') {
+        console.error('Invalid tree data provided to renderTree');
+        return;
+    }
 
-    // Calculate total nodes, max label length
-    var totalNodes = 0;
-    var maxLabelLength = 0;
-    // variables for drag/drop
-    var selectedNode = null;
-    var draggingNode = null;
-    // panning variables
-    var panSpeed = 200;
-    var panBoundary = 20; // Within 20px from edges will pan when dragging.
-    // Misc. variables
-    var i = 0;
-    var duration = 750;
-    var root;
+    // Configuration object for better maintainability
+    const config = {
+        duration: 750,
+        panSpeed: 200,
+        panBoundary: 20,
+        nodeSpacing: 25,
+        levelWidth: 200, // Fixed width for each level instead of variable width
+        zoomScaleExtent: [0.1, 3],
+        tooltipWidth: 300,
+        tooltipFontSize: '12px',
+        notificationDuration: 2000,
+        ghostCircleRadius: 30,
+        nodeCircleRadius: 4.5,
+        tooltipOffset: { x: 125, y: 15 },
+        maxTextWidth: 150 // Maximum width for text labels before wrapping
+    };
 
-    // size of the diagram
-    var viewerWidth = $(document).width();
-    var viewerHeight = $(document).height();
+    // State management
+    const state = {
+        totalNodes: 0,
+        selectedNode: null,
+        draggingNode: null,
+        dragStarted: false,
+        panTimer: null,
+        nodeIdCounter: 0,
+        root: null,
+        viewerWidth: 0,
+        viewerHeight: 0,
+        tooltip: null,
+        notification: null,
+        tooltipDisabled: false,
+        tooltipDisableTimer: null
+    };
 
-    var tree = d3.layout.tree()
-        .size([viewerHeight, viewerWidth]);
+    // DOM elements cache
+    const elements = {
+        container: null,
+        svg: null,
+        svgGroup: null,
+        zoomListener: null
+    };
 
-    // define a d3 diagonal projection for use by the node paths later on.
-    var diagonal = d3.svg.diagonal()
-        .projection(function(d) {
-            return [d.y, d.x];
+    // Initialize the tree visualization
+    function initialize() {
+        try {
+            // Clear existing tree
+            clearExistingTree();
+            
+            // Setup dimensions
+            setupDimensions();
+            
+            // Calculate tree metrics
+            calculateTreeMetrics();
+            
+            // Create SVG elements
+            createSVGElements();
+            
+            // Setup tree layout
+            setupTreeLayout();
+            
+            // Initialize root node
+            initializeRoot();
+            
+            // Setup event listeners
+            setupEventListeners();
+            
+            // Render initial tree
+            renderInitialTree();
+            
+        } catch (error) {
+            console.error('Error initializing tree:', error);
+            showErrorNotification('Failed to initialize tree visualization');
+        }
+    }
+
+    function clearExistingTree() {
+        const container = d3.select("#tree-container");
+        if (!container.empty()) {
+            container.selectAll("*").remove();
+        }
+    }
+
+    function setupDimensions() {
+        state.viewerWidth = $(document).width() || window.innerWidth || 800;
+        state.viewerHeight = $(document).height() || window.innerHeight || 600;
+    }
+
+    function calculateTreeMetrics() {
+        if (!treeData.children) return;
+        
+        visit(treeData, function(d) {
+            state.totalNodes++;
+        }, function(d) {
+            return d.children && d.children.length > 0 ? d.children : null;
         });
+    }
 
-    // A recursive helper function for performing some setup by walking through all nodes
+    function createSVGElements() {
+        // Create base SVG
+        elements.svg = d3.select("#tree-container")
+            .append("svg")
+            .attr("width", state.viewerWidth)
+            .attr("height", state.viewerHeight)
+            .attr("class", "tree-overlay")
+            .style("overflow", "hidden");
 
+        // Create zoom listener
+        elements.zoomListener = d3.behavior.zoom()
+            .scaleExtent(config.zoomScaleExtent)
+            .on("zoom", handleZoom);
+
+        // Apply zoom listener to SVG
+        elements.svg.call(elements.zoomListener);
+
+        // Create main group
+        elements.svgGroup = elements.svg.append("g");
+
+        // Create tooltip
+        state.tooltip = d3.select("body")
+            .append("div")
+            .attr("class", "tree-tooltip")
+            .style("position", "absolute")
+            .style("opacity", 0)
+            .style("background-color", "rgba(0, 0, 0, 0.9)")
+            .style("color", "#FFFFFF")
+            .style("padding", "10px")
+            .style("border-radius", "8px")
+            .style("box-shadow", "0 4px 8px rgba(0,0,0,0.3)")
+            .style("pointer-events", "none")
+            .style("z-index", "1000")
+            .style("max-width", config.tooltipWidth + "px")
+            .style("font-size", config.tooltipFontSize)
+            .style("line-height", "1.4")
+            .style("font-family", "monospace");
+    }
+
+    function setupTreeLayout() {
+        // Tree layout will be configured in update function
+    }
+
+    function initializeRoot() {
+        state.root = treeData;
+        state.root.x0 = state.viewerHeight / 2;
+        state.root.y0 = 0;
+
+        // Collapse all nodes below the second level by default
+        if (state.root.children) {
+            state.root.children.forEach(collapse);
+        }
+    }
+
+    function setupEventListeners() {
+        // Window resize handler
+        const debouncedResize = debounce(handleResize, 250);
+        window.addEventListener('resize', debouncedResize);
+        
+        // Cleanup function for later use
+        window.treeCleanup = function() {
+            window.removeEventListener('resize', debouncedResize);
+            if (state.tooltip) state.tooltip.remove();
+            if (state.notification) state.notification.remove();
+            if (state.tooltipDisableTimer) {
+                clearTimeout(state.tooltipDisableTimer);
+            }
+        };
+    }
+
+    function renderInitialTree() {
+        update(state.root);
+        centerNode(state.root);
+    }
+
+    // Utility functions
     function visit(parent, visitFn, childrenFn) {
         if (!parent) return;
 
         visitFn(parent);
 
-        var children = childrenFn(parent);
-        if (children) {
-            var count = children.length;
-            for (var i = 0; i < count; i++) {
-                visit(children[i], visitFn, childrenFn);
-            }
+        const children = childrenFn(parent);
+        if (children && children.length > 0) {
+            children.forEach(child => visit(child, visitFn, childrenFn));
         }
     }
 
-    // Call visit function to establish maxLabelLength
-    visit(treeData, function(d) {
-        totalNodes++;
-        maxLabelLength = Math.max(d.name.length, maxLabelLength);
-
-    }, function(d) {
-        return d.children && d.children.length > 0 ? d.children : null;
-    });
-
-
-    // sort the tree according to the node names
-
-    function sortTree() {
-        tree.sort(function(a, b) {
-            return b.name.toLowerCase() < a.name.toLowerCase() ? 1 : -1;
-        });
+    function debounce(func, wait) {
+        let timeout;
+        return function executedFunction(...args) {
+            const later = () => {
+                clearTimeout(timeout);
+                func(...args);
+            };
+            clearTimeout(timeout);
+            timeout = setTimeout(later, wait);
+        };
     }
-    // Sort the tree initially incase the JSON isn't in a sorted order.
-    sortTree();
 
-    // TODO: Pan function, can be better implemented.
-
-    function pan(domNode, direction) {
-        var speed = panSpeed;
-        if (panTimer) {
-            clearTimeout(panTimer);
-            translateCoords = d3.transform(svgGroup.attr("transform"));
-            if (direction == 'left' || direction == 'right') {
-                translateX = direction == 'left' ? translateCoords.translate[0] + speed : translateCoords.translate[0] - speed;
-                translateY = translateCoords.translate[1];
-            } else if (direction == 'up' || direction == 'down') {
-                translateX = translateCoords.translate[0];
-                translateY = direction == 'up' ? translateCoords.translate[1] + speed : translateCoords.translate[1] - speed;
-            }
-            scaleX = translateCoords.scale[0];
-            scaleY = translateCoords.scale[1];
-            scale = zoomListener.scale();
-            svgGroup.transition().attr("transform", "translate(" + translateX + "," + translateY + ")scale(" + scale + ")");
-            d3.select(domNode).select('g.node').attr("transform", "translate(" + translateX + "," + translateY + ")");
-            zoomListener.scale(zoomListener.scale());
-            zoomListener.translate([translateX, translateY]);
-            panTimer = setTimeout(function() {
-                pan(domNode, speed, direction);
-            }, 50);
+    function handleZoom() {
+        if (elements.svgGroup) {
+            elements.svgGroup.attr("transform", 
+                "translate(" + d3.event.translate + ")scale(" + d3.event.scale + ")");
         }
     }
 
-    // Define the zoom function for the zoomable tree
-
-    function zoom() {
-        svgGroup.attr("transform", "translate(" + d3.event.translate + ")scale(" + d3.event.scale + ")");
-    }
-
-
-    // define the zoomListener which calls the zoom function on the "zoom" event constrained within the scaleExtents
-    var zoomListener = d3.behavior.zoom().scaleExtent([0.1, 3]).on("zoom", zoom);
-
-    function initiateDrag(d, domNode) {
-        draggingNode = d;
-        d3.select(domNode).select('.ghostCircle').attr('pointer-events', 'none');
-        d3.selectAll('.ghostCircle').attr('class', 'ghostCircle show');
-        d3.select(domNode).attr('class', 'node activeDrag');
-
-        svgGroup.selectAll("g.node").sort(function(a, b) { // select the parent and sort the path's
-            if (a.id != draggingNode.id) return 1; // a is not the hovered element, send "a" to the back
-            else return -1; // a is the hovered element, bring "a" to the front
-        });
-        // if nodes has children, remove the links and nodes
-        if (nodes.length > 1) {
-            // remove link paths
-            links = tree.links(nodes);
-            nodePaths = svgGroup.selectAll("path.link")
-                .data(links, function(d) {
-                    return d.target.id;
-                }).remove();
-            // remove child nodes
-            nodesExit = svgGroup.selectAll("g.node")
-                .data(nodes, function(d) {
-                    return d.id;
-                }).filter(function(d, i) {
-                    if (d.id == draggingNode.id) {
-                        return false;
-                    }
-                    return true;
-                }).remove();
-        }
-
-        // remove parent link
-        parentLink = tree.links(tree.nodes(draggingNode.parent));
-        svgGroup.selectAll('path.link').filter(function(d, i) {
-            if (d.target.id == draggingNode.id) {
-                return true;
+    function handleResize() {
+        try {
+            state.viewerWidth = $(window).width() || window.innerWidth || 800;
+            state.viewerHeight = $(window).height() || window.innerHeight || 600;
+            
+            if (elements.svg) {
+                elements.svg
+                    .attr("width", state.viewerWidth)
+                    .attr("height", state.viewerHeight);
             }
-            return false;
-        }).remove();
-
-        dragStarted = null;
-    }
-
-    // define the baseSvg, attaching a class for styling and the zoomListener
-    var baseSvg = d3.select("#tree-container").append("svg")
-        .attr("width", viewerWidth)
-        .attr("height", viewerHeight)
-        .attr("class", "overlay")
-        .call(zoomListener);
-
-
-    // Define the drag listeners for drag/drop behaviour of nodes.
-    dragListener = d3.behavior.drag()
-        .on("dragstart", function(d) {
-            if (d == root) {
-                return;
+            
+            // Recalculate layout if root exists
+            if (state.root) {
+                update(state.root);
             }
-            dragStarted = true;
-            nodes = tree.nodes(d);
-            d3.event.sourceEvent.stopPropagation();
-            // it's important that we suppress the mouseover event on the node being dragged. Otherwise it will absorb the mouseover event and the underlying node will not detect it d3.select(this).attr('pointer-events', 'none');
-        })
-        .on("drag", function(d) {
-            if (d == root) {
-                return;
-            }
-            if (dragStarted) {
-                domNode = this;
-                initiateDrag(d, domNode);
-            }
-
-            // get coords of mouseEvent relative to svg container to allow for panning
-            relCoords = d3.mouse($('svg').get(0));
-            if (relCoords[0] < panBoundary) {
-                panTimer = true;
-                pan(this, 'left');
-            } else if (relCoords[0] > ($('svg').width() - panBoundary)) {
-
-                panTimer = true;
-                pan(this, 'right');
-            } else if (relCoords[1] < panBoundary) {
-                panTimer = true;
-                pan(this, 'up');
-            } else if (relCoords[1] > ($('svg').height() - panBoundary)) {
-                panTimer = true;
-                pan(this, 'down');
-            } else {
-                try {
-                    clearTimeout(panTimer);
-                } catch (e) {
-
-                }
-            }
-
-            d.x0 += d3.event.dy;
-            d.y0 += d3.event.dx;
-            var node = d3.select(this);
-            node.attr("transform", "translate(" + d.y0 + "," + d.x0 + ")");
-            updateTempConnector();
-        }).on("dragend", function(d) {
-            if (d == root) {
-                return;
-            }
-            domNode = this;
-            if (selectedNode) {
-                // now remove the element from the parent, and insert it into the new elements children
-                var index = draggingNode.parent.children.indexOf(draggingNode);
-                if (index > -1) {
-                    draggingNode.parent.children.splice(index, 1);
-                }
-                if (typeof selectedNode.children !== 'undefined' || typeof selectedNode._children !== 'undefined') {
-                    if (typeof selectedNode.children !== 'undefined') {
-                        selectedNode.children.push(draggingNode);
-                    } else {
-                        selectedNode._children.push(draggingNode);
-                    }
-                } else {
-                    selectedNode.children = [];
-                    selectedNode.children.push(draggingNode);
-                }
-                // Make sure that the node being added to is expanded so user can see added node is correctly moved
-                expand(selectedNode);
-                sortTree();
-                endDrag();
-            } else {
-                endDrag();
-            }
-        });
-
-    function endDrag() {
-        selectedNode = null;
-        d3.selectAll('.ghostCircle').attr('class', 'ghostCircle');
-        d3.select(domNode).attr('class', 'node');
-        // now restore the mouseover event or we won't be able to drag a 2nd time
-        d3.select(domNode).select('.ghostCircle').attr('pointer-events', '');
-        updateTempConnector();
-        if (draggingNode !== null) {
-            update(root);
-            centerNode(draggingNode);
-            draggingNode = null;
+        } catch (error) {
+            console.error('Error handling resize:', error);
         }
     }
 
-    // Helper functions for collapsing and expanding nodes.
+    function showErrorNotification(message) {
+        showNotification(message, 'error');
+    }
 
+    function showNotification(message, type = 'info') {
+        // Remove existing notification
+        if (state.notification) {
+            state.notification.remove();
+        }
+
+        const colors = {
+            info: { bg: '#4CAF50', color: 'white' },
+            error: { bg: '#f44336', color: 'white' },
+            warning: { bg: '#ff9800', color: 'white' }
+        };
+
+        const color = colors[type] || colors.info;
+
+        state.notification = d3.select("body")
+            .append("div")
+            .style("position", "fixed")
+            .style("top", "20px")
+            .style("right", "20px")
+            .style("background", color.bg)
+            .style("color", color.color)
+            .style("padding", "12px 20px")
+            .style("border-radius", "6px")
+            .style("box-shadow", "0 4px 12px rgba(0,0,0,0.3)")
+            .style("z-index", "10000")
+            .style("font-family", "Arial, sans-serif")
+            .style("font-size", "14px")
+            .style("max-width", "300px")
+            .style("word-wrap", "break-word")
+            .text(message);
+
+        // Auto-remove after 3 seconds
+        setTimeout(() => {
+            if (state.notification) {
+                state.notification.transition()
+                    .duration(500)
+                    .style("opacity", 0)
+                    .on("end", function() { 
+                        if (state.notification) state.notification.remove(); 
+                    });
+            }
+        }, 3000);
+    }
+
+    // Tree manipulation functions
     function collapse(d) {
         if (d.children) {
             d._children = d.children;
@@ -292,60 +327,6 @@ function renderTree(treeData) {
         }
     }
 
-    var overCircle = function(d) {
-        selectedNode = d;
-        updateTempConnector();
-    };
-    var outCircle = function(d) {
-        selectedNode = null;
-        updateTempConnector();
-    };
-
-    // Function to update the temporary connector indicating dragging affiliation
-    var updateTempConnector = function() {
-        var data = [];
-        if (draggingNode !== null && selectedNode !== null) {
-            // have to flip the source coordinates since we did this for the existing connectors on the original tree
-            data = [{
-                source: {
-                    x: selectedNode.y0,
-                    y: selectedNode.x0
-                },
-                target: {
-                    x: draggingNode.y0,
-                    y: draggingNode.x0
-                }
-            }];
-        }
-        var link = svgGroup.selectAll(".templink").data(data);
-
-        link.enter().append("path")
-            .attr("class", "templink")
-            .attr("d", d3.svg.diagonal())
-            .attr('pointer-events', 'none');
-
-        link.attr("d", d3.svg.diagonal());
-
-        link.exit().remove();
-    };
-
-    // Function to center node when clicked/dropped so node doesn't get lost when collapsing/moving with large amount of children.
-
-    function centerNode(source) {
-        scale = zoomListener.scale();
-        x = -source.y0;
-        y = -source.x0;
-        x = x * scale + viewerWidth / 2;
-        y = y * scale + viewerHeight / 2;
-        d3.select('g').transition()
-            .duration(duration)
-            .attr("transform", "translate(" + x + "," + y + ")scale(" + scale + ")");
-        zoomListener.scale(scale);
-        zoomListener.translate([x, y]);
-    }
-
-    // Toggle children function
-
     function toggleChildren(d) {
         if (d.children) {
             d._children = d.children;
@@ -357,315 +338,522 @@ function renderTree(treeData) {
         return d;
     }
 
-    // Toggle children on click.
+    function sortTree(tree) {
+        if (!tree) return;
+        
+        tree.sort(function(a, b) {
+            const nameA = (a.name || '').toLowerCase();
+            const nameB = (b.name || '').toLowerCase();
+            return nameA.localeCompare(nameB);
+        });
+    }
 
-    function click(d) {
-        if (d3.event.defaultPrevented) return; // click suppressed
-        d = toggleChildren(d);
-        update(d);
-        centerNode(d);
+    // Node interaction functions
+    function handleNodeClick(d) {
+        if (d3.event.defaultPrevented) return;
+        
+        try {
+            // Disable tooltips temporarily after click
+            state.tooltipDisabled = true;
+            
+            // Clear any existing tooltip
+            clearTooltip();
+            
+            // Clear any existing timer
+            if (state.tooltipDisableTimer) {
+                clearTimeout(state.tooltipDisableTimer);
+            }
+            
+            // Re-enable tooltips after 500ms
+            state.tooltipDisableTimer = setTimeout(() => {
+                state.tooltipDisabled = false;
+                state.tooltipDisableTimer = null;
+            }, 500);
+            
+            let nodeToCenter = d;
+            
+            // If the node is collapsed, expand it (and its single-child descendants)
+            if (d._children) {
+                nodeToCenter = expandUntilMultipleChildren(d);
+            } else if (d.children) {
+                // If the node is expanded, collapse the entire subtree
+                nodeToCenter = collapseSubtree(d);
+            }
+            update(d);
+            centerNode(nodeToCenter);
+        } catch (error) {
+            console.error('Error handling node click:', error);
+        }
+    }
+
+    function expandUntilMultipleChildren(d) {
+        // If the node has children, expand it
+        if (d._children) {
+            d.children = d._children;
+            d._children = null;
+        }
+        
+        // If the node has exactly one child, recursively expand that child
+        // and return the result of that expansion
+        if (d.children && d.children.length === 1) {
+            return expandUntilMultipleChildren(d.children[0]);
+        }
+        
+        // Return this node if it has multiple children or no children
+        return d;
+    }
+
+    function collapseSubtree(d) {
+        // Store all children in _children and remove them from children
+        if (d.children) {
+            d._children = d.children;
+            d.children = null;
+        }
+        return d;
+    }
+
+    function clearTooltip() {
+        if (state.tooltip) {
+            state.tooltip.transition()
+                .duration(100)
+                .style("opacity", 0);
+        }
+    }
+
+    function calculateTooltipPosition(mouseX, mouseY) {
+        // Get tooltip dimensions after it's been rendered
+        const tooltipNode = state.tooltip.node();
+        const tooltipRect = tooltipNode.getBoundingClientRect();
+        const tooltipWidth = tooltipRect.width;
+        const tooltipHeight = tooltipRect.height;
+        
+        // Get window dimensions
+        const windowWidth = window.innerWidth || document.documentElement.clientWidth;
+        const windowHeight = window.innerHeight || document.documentElement.clientHeight;
+        
+        // Cursor dimensions (approximate)
+        const cursorWidth = 20;
+        const cursorHeight = 20;
+        
+        // Calculate initial position (default offset)
+        let x = mouseX - config.tooltipOffset.x;
+        let y = mouseY + config.tooltipOffset.y;
+        
+        // Adjust horizontal position to prevent overflow
+        if (x + tooltipWidth > windowWidth) {
+            // Tooltip would overflow right edge, position it to the left of the mouse
+            x = mouseX - tooltipWidth - 10;
+        }
+        if (x < 0) {
+            // Tooltip would overflow left edge, position it at the left edge with small margin
+            x = 10;
+        }
+        
+        // Adjust vertical position to prevent overflow
+        if (y + tooltipHeight > windowHeight) {
+            // Tooltip would overflow bottom edge, position it above the mouse
+            y = mouseY - tooltipHeight - 10;
+        }
+        if (y < 0) {
+            // Tooltip would overflow top edge, position it at the top edge with small margin
+            y = 10;
+        }
+        
+        // Check for cursor overlap and adjust if necessary
+        const cursorLeft = mouseX;
+        const cursorRight = mouseX + cursorWidth;
+        const cursorTop = mouseY;
+        const cursorBottom = mouseY + cursorHeight;
+        
+        const tooltipLeft = x;
+        const tooltipRight = x + tooltipWidth;
+        const tooltipTop = y;
+        const tooltipBottom = y + tooltipHeight;
+        
+        // Check horizontal overlap
+        if (tooltipLeft < cursorRight && tooltipRight > cursorLeft) {
+            // Horizontal overlap detected - prioritize moving to the right
+            const rightPosition = cursorRight + 5;
+            const leftPosition = cursorLeft - tooltipWidth - 5;
+            
+            // Check if moving to the right would keep tooltip within window bounds
+            if (rightPosition + tooltipWidth <= windowWidth) {
+                // Prefer right side if it fits
+                x = rightPosition;
+            } else if (leftPosition >= 0) {
+                // Fall back to left side if right doesn't fit but left does
+                x = leftPosition;
+            } else {
+                // If neither side fits well, try to position as close to right edge as possible
+                x = windowWidth - tooltipWidth - 10;
+            }
+        }
+        
+        // Check vertical overlap
+        if (tooltipTop < cursorBottom && tooltipBottom > cursorTop) {
+            // Vertical overlap detected
+            if (y < mouseY) {
+                // Tooltip is above cursor, move it further up
+                y = cursorTop - tooltipHeight - 5;
+            } else {
+                // Tooltip is below cursor, move it further down
+                y = cursorBottom + 5;
+            }
+        }
+        
+        // Final boundary check to ensure tooltip stays within window
+        if (x + tooltipWidth > windowWidth) {
+            x = windowWidth - tooltipWidth - 10;
+        }
+        if (x < 0) {
+            x = 10;
+        }
+        if (y + tooltipHeight > windowHeight) {
+            y = windowHeight - tooltipHeight - 10;
+        }
+        if (y < 0) {
+            y = 10;
+        }
+        
+        return { x, y };
+    }
+
+    function handleNodeMouseOver(d) {
+        if (d === state.root || d.name === "QED" || !state.tooltip || state.tooltipDisabled) return;
+
+        try {
+            // Clear any existing tooltip first
+            clearTooltip();
+
+            d3.select(this).transition()
+                .duration(100)
+                .attr('opacity', 0.8);
+
+            state.tooltip.transition()
+                .duration(100)
+                .style("opacity", 0.95);
+
+            const tooltipContent = createTooltipContent(d);
+            state.tooltip.html(tooltipContent);
+            
+            // Calculate optimal tooltip position considering window edges
+            const position = calculateTooltipPosition(d3.event.pageX, d3.event.pageY);
+            state.tooltip
+                .style("left", position.x + "px")
+                .style("top", position.y + "px");
+        } catch (error) {
+            console.error('Error handling mouseover:', error);
+        }
+    }
+
+    function handleNodeMouseOut() {
+        try {
+            d3.select(this).transition()
+                .duration(100)
+                .attr('opacity', 1);
+
+            // Use the clearTooltip function for consistency
+            clearTooltip();
+        } catch (error) {
+            console.error('Error handling mouseout:', error);
+        }
+    }
+
+    function handleNodeContextMenu(d) {
+        d3.event.preventDefault();
+
+        try {
+            const script = getProofScript(d, "");
+            
+            if (navigator.clipboard && navigator.clipboard.writeText) {
+                navigator.clipboard.writeText(script).then(() => {
+                    showNotification("Proof script copied to clipboard!", 'info');
+                }).catch(() => {
+                    fallbackCopyTextToClipboard(script);
+                });
+            } else {
+                fallbackCopyTextToClipboard(script);
+            }
+        } catch (error) {
+            console.error('Error copying to clipboard:', error);
+            showErrorNotification('Failed to copy proof script');
+        }
+    }
+
+    function fallbackCopyTextToClipboard(text) {
+        const textArea = document.createElement("textarea");
+        textArea.value = text;
+        textArea.style.position = "fixed";
+        textArea.style.left = "-999999px";
+        textArea.style.top = "-999999px";
+        document.body.appendChild(textArea);
+        textArea.focus();
+        textArea.select();
+        
+        try {
+            document.execCommand('copy');
+            showNotification("Proof script copied to clipboard!", 'info');
+        } catch (err) {
+            showErrorNotification('Failed to copy proof script');
+        }
+        
+        document.body.removeChild(textArea);
+    }
+
+    function getProofScript(d, tail) {
+        if (!d) return tail;
+        
+        const scriptTail = (d.name || '') + "\n" + tail;
+        const parent = d.parent;
+        
+        if (parent) {
+            if (parent.name === "Proof.") {
+                return "Proof.\n" + scriptTail;
+            }
+            return getProofScript(parent, scriptTail);
+        }
+        return scriptTail;
+    }
+
+    function createTooltipContent(d) {
+        if (!d) return '';
+
+        try {
+            const stylizeCoqString = (str) => {
+                if (!str) return '';
+                return str
+                    .replace(/\bmatch\b/g, '<br/>match')
+                    .replace(/\bend\b/g, '<br/>end')
+                    .replace(/\|/g, '<br/>&nbsp;&nbsp;&nbsp;&nbsp;|');
+            };
+
+            const context = Array.isArray(d.proofcontext) ? d.proofcontext : [];
+            const stylizedCtx = context.map(stylizeCoqString).join('<br/><br/>');
+            const stylizedGoal = stylizeCoqString(d.proofgoal || '');
+
+            return `
+                ${`<div style="margin-bottom: 8px; color: #ADD8E6; font-weight: bold; text-align: center;">${"Proof state before tactic:"}</div>`}
+                ${stylizedCtx ? `<div style="margin-bottom: 8px; color: #4CAF50;">${stylizedCtx}</div>` : ''}
+                ${stylizedCtx || stylizedGoal ? '<hr style="margin: 8px 0; border-color: white;">' : ''}
+                ${stylizedGoal ? `<div>${stylizedGoal}</div>` : ''}
+            `;
+        } catch (error) {
+            console.error('Error creating tooltip content:', error);
+            return `<div>Error displaying node information</div>`;
+        }
+    }
+
+    // Layout and rendering functions
+    function centerNode(source) {
+        if (!source || !elements.zoomListener) return;
+
+        try {
+            const scale = elements.zoomListener.scale();
+            let x = -source.y0;
+            let y = -source.x0;
+            x = x * scale + state.viewerWidth / 2;
+            y = y * scale + state.viewerHeight / 2;
+            
+            d3.select('g').transition()
+                .duration(config.duration)
+                .attr("transform", "translate(" + x + "," + y + ")scale(" + scale + ")");
+            
+            elements.zoomListener.scale(scale);
+            elements.zoomListener.translate([x, y]);
+        } catch (error) {
+            console.error('Error centering node:', error);
+        }
     }
 
     function update(source) {
-        // Compute the new height, function counts total children of root node and sets tree height accordingly.
-        // This prevents the layout looking squashed when new nodes are made visible or looking sparse when nodes are removed
-        // This makes the layout more consistent.
-        var levelWidth = [1];
-        var childCount = function(level, n) {
+        if (!source || !elements.svgGroup) return;
 
-            if (n.children && n.children.length > 0) {
-                if (levelWidth.length <= level + 1) levelWidth.push(0);
-
-                levelWidth[level + 1] += n.children.length;
-                n.children.forEach(function(d) {
-                    childCount(level + 1, d);
-                });
-            }
-        };
-        childCount(0, root);
-        var newHeight = d3.max(levelWidth) * 25; // 25 pixels per line  
-        tree = tree.size([newHeight, viewerWidth]);
-
-        var div = d3.select("body").append("div")
-            .attr("class", "tooltip")
-            .style("opacity", 0);
-
-        // Compute the new tree layout.
-        var nodes = tree.nodes(root).reverse(),
-            links = tree.links(nodes);
-
-        // Set widths between levels based on maxLabelLength.
-        nodes.forEach(function(d) {
-            d.y = (d.depth * (maxLabelLength * 10)); //maxLabelLength * 10px
-            // alternatively to keep a fixed scale one can set a fixed depth per level
-            // Normalize for fixed-depth by commenting out below line
-            // d.y = (d.depth * 500); //500px per level.
-        });
-
-        // Update the nodes…
-        node = svgGroup.selectAll("g.node")
-            .data(nodes, function(d) {
-                return d.id || (d.id = ++i);
-            });
-
-        // Enter any new nodes at the parent's previous position.
-        var nodeEnter = node.enter().append("g")
-            // Disable dragging nodes to move them within the tree.
-            //.call(dragListener)
-            .attr("class", "node")
-            .attr("transform", function(d) {
-                return "translate(" + source.y0 + "," + source.x0 + ")";
-            })
-            .on('click', click);
-
-        function getProofScript(d, tail) {
-            var scriptTail = d.name + "\n" + tail;
-            var parent = d.parent;
-            if (parent) {
-                if (parent.name === "Proof.") {
-                    return "Proof.\n" + scriptTail;
+        try {
+            // Calculate new dimensions
+            const levelWidth = [1];
+            const childCount = function(level, n) {
+                if (n.children && n.children.length > 0) {
+                    if (levelWidth.length <= level + 1) levelWidth.push(0);
+                    levelWidth[level + 1] += n.children.length;
+                    n.children.forEach(function(d) {
+                        childCount(level + 1, d);
+                    });
                 }
-                return getProofScript(parent, scriptTail);
-            }
-            return scriptTail;
-        }
-
-        function stylizeCoqString(str) {
-            // Stylizing match statements
-            // newline before match or end keywords
-            str = str.replace(/\bmatch\b/g, ' </br> match');
-            str = str.replace(/\bend\b/g, ' </br> end');
-            // newline and some space before each case
-            str = str.replace(/\|/g, '</br>&nbsp;&nbsp;  |');
-            return str;
-        }
-        
-        nodeEnter.append("circle")
-            .attr('class', 'nodeCircle')
-            .attr("r", 0)
-            .style("fill", function(d) {
-                return d._children ? "lightsteelblue" : "#fff";
-            })
-
-            // On mouseover, show the formatted proof context and 
-            // proof goal before the given tactic
-            .on('mouseover', function (d, i) {
-
-                // don't show state if root
-                if (d == root) return;
-
-                d3.select(this).transition()
-                    .duration(50)
-                    .attr('opacity', '.85');
+            };
+            childCount(0, state.root);
             
-                div.transition()
-                    .duration(50)
-                    .style("opacity", .9);
-            
-                var stylizedCtx = Array.from(d.proofcontext)
-                var stylizedCtxStr = stylizedCtx.reverse().join('</br></br>')
-                stylizedCtxStr = stylizeCoqString(stylizedCtxStr)
+            const newHeight = d3.max(levelWidth) * config.nodeSpacing;
+            const tree = d3.layout.tree().size([newHeight, state.viewerWidth]);
 
-                var stylizedGoal = stylizeCoqString(d.proofgoal)
+            // Sort tree
+            sortTree(tree);
 
-                // Display the formatted information
-                div.html(`${stylizedCtxStr}<br/>_____________________________________________<br/><br/>${stylizedGoal}`)
-                    .style("left", (d3.event.pageX) + "px")
-                    .style("top", (d3.event.pageY - 28) + "px")
-                    .style("background-color", "rgba(0, 0, 0, 0.8)") // Dark background with opacity
-                    .style("color", "#FFFFFF") // White text
-                    .style("padding", "5px") // Add some padding for readability
-                    .style("border-radius", "5px") // Optional: Add rounded corners
-                    .style("width", "250px")
-                    .style("font-size", "10px")
-                    .style("text-align", "left");
-            })
+            // Compute new tree layout
+            const nodes = tree.nodes(state.root).reverse();
+            const links = tree.links(nodes);
 
-            .on('mouseout', function (d, i) {
-                d3.select(this).transition()
-                    .duration(50)
-                    .attr('opacity', '1');
-            
-                div.transition()
-                    .duration(500)
-                    .style("opacity", 0);
-            })
-            
-
-            .on('contextmenu', function(d, i){
-                d3.event.preventDefault();
-
-                // collect proof script up to node
-                var script = getProofScript(d, "");
-                
-                // copy the proof script to clipboard
-                navigator.clipboard.writeText(script);
-
-                // give a notification of script copied successfully
-                var notification = d3.select("body")
-                    .append("div")
-                    .style("position", "absolute")
-                    .style("left", `${d3.event.pageX}px`)
-                    .style("top", `${d3.event.pageY}px`)
-                    .style("background", "white")
-                    .style("color", "black")
-                    .style("padding", "8px")
-                    .style("border-radius", "5px")
-                    .style("border", "1px solid black")
-                    .style("opacity", 1)
-                    .style("pointer-events", "none") 
-                    .text("Proof script copied to clipboard!");
-
-                // fade out and remove after 2 seconds
-                notification.transition()
-                    .duration(2000)
-                    .style("opacity", 0)
-                    .on("end", function() { notification.remove(); });
+            // Set node positions with fixed level width
+            nodes.forEach(function(d) {
+                d.y = (d.depth * config.levelWidth);
             });
 
-        nodeEnter.append("text")
-            .attr("x", function(d) {
-                return d.children || d._children ? -10 : 10;
-            })
-            .attr("dy", ".35em")
-            .attr('class', 'nodeText')
-            .attr("text-anchor", function(d) {
-                return d.children || d._children ? "end" : "start";
-            })
-            .text(function(d) {
-                return d.name;
-            })
-            .style("fill-opacity", 0);
-
-        // phantom node to give us mouseover in a radius around it
-        nodeEnter.append("circle")
-            .attr('class', 'ghostCircle')
-            .attr("r", 30)
-            .attr("opacity", 0.2) // change this to zero to hide the target area
-        .style("fill", "red")
-            .attr('pointer-events', 'mouseover')
-            .on("mouseover", function(node) {
-                overCircle(node);
-            })
-            .on("mouseout", function(node) {
-                outCircle(node);
-            });
-
-        // Update the text to reflect whether node has children or not.
-        node.select('text')
-            .attr("x", function(d) {
-                return d.children || d._children ? -10 : 10;
-            })
-            .attr("text-anchor", function(d) {
-                return d.children || d._children ? "end" : "start";
-            })
-            .text(function(d) {
-                return d.name;
-            });
-
-        // Change the circle fill depending on whether it has children and is collapsed
-        node.select("circle.nodeCircle")
-            .attr("r", 4.5)
-            .style("fill", function(d) {
-                return d._children ? "lightsteelblue" : "#fff";
-            });
-
-        // Transition nodes to their new position.
-        var nodeUpdate = node.transition()
-            .duration(duration)
-            .attr("transform", function(d) {
-                return "translate(" + d.y + "," + d.x + ")";
-            });
-
-        // Fade the text in
-        nodeUpdate.select("text")
-            .style("fill-opacity", 1);
-
-        // Transition exiting nodes to the parent's new position.
-        var nodeExit = node.exit().transition()
-            .duration(duration)
-            .attr("transform", function(d) {
-                return "translate(" + source.y + "," + source.x + ")";
-            })
-            .remove();
-
-        nodeExit.select("circle")
-            .attr("r", 0);
-
-        nodeExit.select("text")
-            .style("fill-opacity", 0);
-
-        // Update the links…
-        var link = svgGroup.selectAll("path.link")
-            .data(links, function(d) {
-                return d.target.id;
-            });
-
-        // Enter any new links at the parent's previous position.
-        link.enter().insert("path", "g")
-            .attr("class", "link")
-            .attr("d", function(d) {
-                var o = {
-                    x: source.x0,
-                    y: source.y0
-                };
-                return diagonal({
-                    source: o,
-                    target: o
+            // Update nodes
+            const node = elements.svgGroup.selectAll("g.node")
+                .data(nodes, function(d) {
+                    return d.id || (d.id = ++state.nodeIdCounter);
                 });
+
+            // Enter new nodes
+            const nodeEnter = node.enter().append("g")
+                .attr("class", "node")
+                .attr("transform", function(d) {
+                    return "translate(" + source.y0 + "," + source.x0 + ")";
+                })
+                .on('click', handleNodeClick)
+                .style("cursor", "pointer");
+
+            // Add circles to new nodes
+            nodeEnter.append("circle")
+                .attr('class', 'nodeCircle')
+                .attr("r", 0)
+                .style("fill", function(d) {
+                    return d._children ? "#4A90E2" : "#fff";
+                })
+                .style("stroke", "#555")
+                .style("stroke-width", "2px")
+                .on('mouseover', handleNodeMouseOver)
+                .on('mouseout', handleNodeMouseOut)
+                .on('contextmenu', handleNodeContextMenu);
+
+            // Add text to new nodes with wrapping support
+            nodeEnter.append("foreignObject")
+                .attr("x", function(d) {
+                    return d.children || d._children ? -config.maxTextWidth - 10 : 10;
+                })
+                .attr("y", -10)
+                .attr("width", config.maxTextWidth)
+                .attr("height", 40)
+                .append("xhtml:div")
+                .attr('class', 'nodeText')
+                .style("font-size", "12px")
+                .style("font-family", "monospace")
+                .style("color", "#333")
+                .style("word-wrap", "break-word")
+                .style("overflow-wrap", "break-word")
+                .style("line-height", "1.2")
+                .style("text-align", function(d) {
+                    return d.children || d._children ? "right" : "left";
+                })
+                .text(function(d) {
+                    return d.name || '';
+                });
+
+            // Add ghost circle for better interaction
+            nodeEnter.append("circle")
+                .attr('class', 'ghostCircle')
+                .attr("r", config.ghostCircleRadius)
+                .attr("opacity", 0)
+                .style("fill", "transparent")
+                .attr('pointer-events', 'mouseover')
+                .on("mouseover", function(node) {
+                    state.selectedNode = node;
+                })
+                .on("mouseout", function(node) {
+                    state.selectedNode = null;
+                });
+
+            // Update existing nodes
+            node.select('foreignObject')
+                .attr("x", function(d) {
+                    return d.children || d._children ? -config.maxTextWidth - 10 : 10;
+                })
+                .select('div')
+                .style("text-align", function(d) {
+                    return d.children || d._children ? "right" : "left";
+                })
+                .text(function(d) {
+                    return d.name || '';
+                });
+
+            node.select("circle.nodeCircle")
+                .attr("r", config.nodeCircleRadius)
+                .style("fill", function(d) {
+                    return d._children ? "#4A90E2" : "#fff";
+                });
+
+            // Transition nodes to new positions
+            const nodeUpdate = node.transition()
+                .duration(config.duration)
+                .attr("transform", function(d) {
+                    return "translate(" + d.y + "," + d.x + ")";
+                });
+
+            nodeUpdate.select("foreignObject")
+                .style("opacity", 1);
+
+            // Transition exiting nodes
+            const nodeExit = node.exit().transition()
+                .duration(config.duration)
+                .attr("transform", function(d) {
+                    return "translate(" + source.y + "," + source.x + ")";
+                })
+                .remove();
+
+            nodeExit.select("circle")
+                .attr("r", 0);
+
+            nodeExit.select("foreignObject")
+                .style("opacity", 0);
+
+            // Update links
+            const link = elements.svgGroup.selectAll("path.link")
+                .data(links, function(d) {
+                    return d.target.id;
+                });
+
+            // Enter new links
+            link.enter().insert("path", "g")
+                .attr("class", "link")
+                .style("fill", "none")
+                .style("stroke", "#ccc")
+                .style("stroke-width", "2px")
+                .attr("d", function(d) {
+                    const o = { x: source.x0, y: source.y0 };
+                    return diagonal({ source: o, target: o });
+                });
+
+            // Transition links to new positions
+            link.transition()
+                .duration(config.duration)
+                .attr("d", diagonal);
+
+            // Transition exiting links
+            link.exit().transition()
+                .duration(config.duration)
+                .attr("d", function(d) {
+                    const o = { x: source.x, y: source.y };
+                    return diagonal({ source: o, target: o });
+                })
+                .remove();
+
+            // Store old positions for next transition
+            nodes.forEach(function(d) {
+                d.x0 = d.x;
+                d.y0 = d.y;
             });
 
-        // Transition links to their new position.
-        link.transition()
-            .duration(duration)
-            .attr("d", diagonal);
-
-        // Transition exiting nodes to the parent's new position.
-        link.exit().transition()
-            .duration(duration)
-            .attr("d", function(d) {
-                var o = {
-                    x: source.x,
-                    y: source.y
-                };
-                return diagonal({
-                    source: o,
-                    target: o
-                });
-            })
-            .remove();
-
-        // Stash the old positions for transition.
-        nodes.forEach(function(d) {
-            d.x0 = d.x;
-            d.y0 = d.y;
-        });
+        } catch (error) {
+            console.error('Error updating tree:', error);
+            showErrorNotification('Error updating tree layout');
+        }
     }
 
-    // Append a group which holds all nodes and which the zoom Listener can act upon.
-    var svgGroup = baseSvg.append("g");
+    // Diagonal projection for links
+    const diagonal = d3.svg.diagonal()
+        .projection(function(d) {
+            return [d.y, d.x];
+        });
 
-    // Define the root
-    root = treeData;
-    root.x0 = viewerHeight / 2;
-    root.y0 = 0;
-
-    // Collapse all nodes below the second level by default.
-    root.children.forEach(collapse);
-
-    // Layout the tree initially and center on the root node.
-    update(root);
-    centerNode(root);
-
-    // Add listener for dynamic panel re-sizing 
-    window.addEventListener('resize', function() {
-        // retrieve new width and height after re-sizing
-        viewerWidth = $(window).width();
-        viewerHeight = $(window).height();
-        
-        // update the attributes
-        d3.select("svg")
-            .attr("width", viewerWidth)
-            .attr("height", viewerHeight);
-    });
+    // Initialize the tree
+    initialize();
 }

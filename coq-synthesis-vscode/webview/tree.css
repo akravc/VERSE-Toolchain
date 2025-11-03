@@ -47,6 +47,17 @@ EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.*/
     font-family: sans-serif;
 }
 
+.nodeText {
+    font-size: 12px;
+    font-family: monospace;
+    color: #333;
+    word-wrap: break-word;
+    overflow-wrap: break-word;
+    line-height: 1.2;
+    margin: 0;
+    padding: 0;
+}
+
 .link {
     fill: none;
     stroke: #ccc;

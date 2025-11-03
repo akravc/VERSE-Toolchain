@@ -110,7 +110,10 @@ class SingletonWebViewPanel {
             SingletonWebViewPanel.viewType,
             'Coq Synthesis',
             column || vscode.ViewColumn.One,
-            SingletonWebViewPanel.getWebviewOptions(extensionUri),
+            {
+              retainContextWhenHidden: true,
+              ...SingletonWebViewPanel.getWebviewOptions(extensionUri)
+            }
         );
 
         SingletonWebViewPanel.currentPanel = new SingletonWebViewPanel(panel, extensionUri);
@@ -171,7 +174,7 @@ export function activate(context: vscode.ExtensionContext) {
                     'The `proverbot9001.path` setting must be set before using this command.');
                 return;
             }
-            let pythonExe: string = config.get('proverbot9001.pythonInterpreter') ?? "";
+            let pythonExe = config.get('proverbot9001.pythonInterpreter');
             if (pythonExe == '') {
                 pythonExe = path.join(proverbotDir, 'venv/bin/python3');
             }
@@ -242,7 +245,7 @@ export function activate(context: vscode.ExtensionContext) {
                 'message': 'Running proof search...\r\n',
                 'shellPath': wrapperScript,
                 'shellArgs': [
-                    pythonExe,
+                    proverbotDir + '/venv/bin/python3',
                     proverbotDir + '/src/search_file.py',
                     '--weightsfile', proverbotDir + '/data/polyarg-weights.dat',
                     tempFilePath,
@@ -270,7 +273,6 @@ export function activate(context: vscode.ExtensionContext) {
             const result = JSON.parse(resultText);
             const [resultDesc, resultProof, resultInfo] = result;
 
-
             // Display proof tree.  We show this regardless of the synthesis
             // result.
             const treeResultFileName =
@@ -281,6 +283,7 @@ export function activate(context: vscode.ExtensionContext) {
                 await fsPromises.unlink(treeResultPath);
             });
             const treeResultText = await fsPromises.readFile(treeResultPath, {'encoding': 'utf8'});
+            console.log(treeResultText);
             console.log(treeResultText);
             const treeResult = JSON.parse(treeResultText);
 
@@ -315,12 +318,16 @@ export function activate(context: vscode.ExtensionContext) {
             `);
             panel.postMessage(treeResult);
 
+            if (resultProof['status'] == 'SUCCESS') {
+                vscode.window.showInformationMessage(
+                    'Proof synthesis finished: status = SUCCESS');
+            }
 
             // Paste the synthesized proof into the buffer, replacing the
             // current proof.  This happens only if the synthesis succeeded.
             if (resultProof['status'] != 'SUCCESS') {
                 vscode.window.showErrorMessage(
-                    'Proof synthesis finished: status = ' + resultProof['status']);
+                    'Proof synthesis finished: status = INCOMPLETE');
                 return;
             }
 
@@ -331,7 +338,18 @@ export function activate(context: vscode.ExtensionContext) {
             const span = resultInfo['span'];
             const start = document.positionAt(span[1]);
             const end = document.positionAt(span[2]);
-            const spanRange = new vscode.Range(start, end);
+            
+            // Get the text in the span range to check for leading/trailing whitespace
+            const spanText = document.getText(new vscode.Range(start, end));
+            const trimmedSpanText = spanText.trim();
+            
+            // Adjust the range to exclude leading/trailing whitespace
+            const leadingWhitespace = spanText.length - spanText.trimStart().length;
+            const trailingWhitespace = spanText.length - spanText.trimEnd().length;
+            
+            const adjustedStart = document.positionAt(span[1] + leadingWhitespace);
+            const adjustedEnd = document.positionAt(span[2] - trailingWhitespace);
+            const spanRange = new vscode.Range(adjustedStart, adjustedEnd);
 
             console.log('make read-write');
             // Restore focus to the editor so we can make it writeable.
